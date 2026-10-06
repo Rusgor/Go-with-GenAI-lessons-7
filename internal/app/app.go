@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"homework/internal/handler"
+	"homework/internal/middleware"
 	"homework/internal/repository"
 )
 
@@ -26,5 +27,5 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("/api/v1/devices", devices.Collection)
 	mux.HandleFunc("/api/v1/devices/", devices.Item)
 	mux.HandleFunc("/", handler.NotFound)
-	return mux
+	return middleware.CORS(mux)
 }
