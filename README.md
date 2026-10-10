@@ -175,6 +175,55 @@ go test -race ./...
 go vet ./...
 ```
 
+## Lesson 8 Report
+
+### LibraTrack: запуск
+
+У цьому репозиторії Lesson 8 реалізовано як окремий LibraTrack API; наявний Lesson 7 API пристроїв і його чисте in-memory сховище збережені.
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d
+$env:DATABASE_URL = "postgres://libratrack:libratrack@localhost:5432/libratrack?sslmode=disable"
+$env:MIGRATIONS_PATH = "migrations"
+$env:PORT = "8081"
+go run ./cmd/libratrack
+```
+
+API: `http://localhost:8081/health`, `http://localhost:8081/api/v1/books`; Swagger endpoint: `http://localhost:8081/swagger/index.html`. Міграції застосовуються командою `golang-migrate` під час запуску. Перехідна нормалізаційна міграція, що відповідає імені з умови, розміщена окремо в `migrations-homework/migrations/` і має legacy `000001` перед нею; не запускайте цю послідовність поверх основної схеми.
+
+### Промпт для генерації/перевірки міграції
+
+> Згенеруй для PostgreSQL і golang-migrate файли `000002_normalize_books.up.sql` та `000002_normalize_books.down.sql`, виходячи з legacy таблиці `books(id, title, isbn, author, category, published_year, description, created_at, updated_at)`. Нормалізуй автора й категорію в таблиці `authors(id, full_name, bio)` та `categories(id, name)`: категорія має зв’язок one-to-many з книгами, автори — many-to-many через `book_authors(book_id, author_id)`. Додай явні іменовані зовнішні ключі, `ON DELETE RESTRICT` для категорій та авторів, `ON DELETE CASCADE` для зв’язків книги, індекси на зовнішні ключі, унікальні ключі де це потрібно. Up має перенести наявні текстові значення у нормалізовані таблиці; down має відновити legacy колонки й значення та видалити створені об’єкти у зворотному порядку. Не використовуй `AutoMigrate`. Перевір синтаксис і зворотність для PostgreSQL.
+
+> Уточнення, додані під час рефакторингу: legacy `author` трактується як список авторів із комою-роздільником; точний початковий текст `author` і `category` зберігається для відновлення при down. Порожню/пробільну категорію up відносить до `Uncategorized`. Кома в самому імені автора неоднозначна для такого legacy формату.
+
+### Діагностика N+1 та latency
+
+#### Що реалізовано
+
+`GormBookRepository.List` використовує `.Preload("Authors").Preload("Category")`. Інтеграційний тест `TestPostgresBookListNPlusOneComparison` додає окремий детермінований набір із 10 книг, 5 авторів і 3 категорій; фільтрує обидва варіанти за тією самою тестовою категорією, виконує один warm-up і 7 замірів, а виводить SQL кожного варіанта та медіану часу в мілісекундах. Наївний тестовий шлях виконує окреме завантаження авторів і категорії для кожної книги; production шлях — `List` з GORM Preload. Перевірка очікує 21 SELECT проти 3 SELECT, включно з пакетними запитами зв’язків. Ці числа є умовами тесту, а не результатом вимірювання в цьому середовищі.
+
+Запуск порівняння на окремій PostgreSQL тестовій базі (команда виводить справжні SQL і час у `go test -v`):
+
+```powershell
+$env:TEST_DATABASE_URL = "postgres://<user>:<password>@localhost:5432/libratrack_test?sslmode=disable"
+go test ./internal/repository -run '^TestPostgresBookListNPlusOneComparison$' -count=1 -v
+```
+
+#### Фактичний результат запуску
+
+**Статус: емпіричні докази ще не зібрані.** Під час перевірки цього середовища `DATABASE_URL` і `TEST_DATABASE_URL` не були встановлені, PostgreSQL на `127.0.0.1:5432` не відповідав, а CLI `docker`, `podman`, `psql` і `migrate` були відсутні. Тому міграції, інтеграційний тест і API не запускалися на PostgreSQL; нижче навмисно немає вигаданих SQL логів або latency.
+
+| Варіант | Фактичний SELECT count | Фактична latency (медіана, ms) | SQL log |
+|---|---:|---:|---|
+| До: наївне завантаження | Не виміряно | Не виміряно | Потрібен запуск наведеної команди з `TEST_DATABASE_URL` |
+| Після: GORM `Preload` | Не виміряно | Не виміряно | Потрібен запуск наведеної команди з `TEST_DATABASE_URL` |
+
+Після успішного запуску вставити сюди точні рядки `BEFORE` / `AFTER` із terminal output, зокрема повторювані запити до авторів/категорій та пакетні `SELECT ... WHERE ... IN (...)` після Preload, а також фактичні SELECT counts і median latency. Повторний запуск з реальною тестовою БД — обов’язкова умова завершення цього пункту здачі; наведений тест сам по собі не означає, що докази вже отримані.
+
+Перевірки, виконані без бази: `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`. Інтеграційні тести PostgreSQL запускаються, коли встановлено `TEST_DATABASE_URL`; у локальному запуску без цієї змінної вони пропускаються. Див. [контрольні точки](checkpoints/README.md).
+
 ## 7. Здача
 
 Репозиторій із коректним `VARIANT`, зеленим CI і короткою секцією в цьому README: як запустити, що реалізовано,
