@@ -202,7 +202,7 @@ API: `http://localhost:8081/health`, `http://localhost:8081/api/v1/books`; Swagg
 
 #### Що реалізовано
 
-`GormBookRepository.List` використовує `.Preload("Authors").Preload("Category")`. Інтеграційний тест `TestPostgresBookListNPlusOneComparison` додає окремий детермінований набір із 10 книг, 5 авторів і 3 категорій; фільтрує обидва варіанти за тією самою тестовою категорією, виконує один warm-up і 7 замірів, а виводить SQL кожного варіанта та медіану часу в мілісекундах. Наївний тестовий шлях виконує окреме завантаження авторів і категорії для кожної книги; production шлях — `List` з GORM Preload. Перевірка очікує 21 SELECT проти 3 SELECT, включно з пакетними запитами зв’язків. Ці числа є умовами тесту, а не результатом вимірювання в цьому середовищі.
+`GormBookRepository.List` використовує `.Preload("Authors").Preload("Category")`. Інтеграційний тест `TestPostgresBookListNPlusOneComparison` додає окремий детермінований набір із 10 книг, 5 авторів і 3 категорій; фільтрує обидва варіанти за тією самою тестовою категорією, виконує один warm-up і 7 замірів, а виводить SQL кожного варіанта та медіану часу в мілісекундах. Наївний тестовий шлях виконує окреме завантаження авторів і категорії для кожної книги; production шлях — `List` з GORM Preload. Перевірка очікує 21 SELECT проти 4 SELECT: один запит для `books`, окремі пакетні запити для `book_authors` і `authors`, та один запит для `categories` (на тестовому наборі всі книги мають одну категорію). Ці числа є умовами тесту, а не результатом вимірювання в цьому середовищі.
 
 Запуск порівняння на окремій PostgreSQL тестовій базі (команда виводить справжні SQL і час у `go test -v`):
 
@@ -213,16 +213,31 @@ go test ./internal/repository -run '^TestPostgresBookListNPlusOneComparison$' -c
 
 #### Фактичний результат запуску
 
-**Статус: емпіричні докази ще не зібрані.** Під час перевірки цього середовища `DATABASE_URL` і `TEST_DATABASE_URL` не були встановлені, PostgreSQL на `127.0.0.1:5432` не відповідав, а CLI `docker`, `podman`, `psql` і `migrate` були відсутні. Тому міграції, інтеграційний тест і API не запускалися на PostgreSQL; нижче навмисно немає вигаданих SQL логів або latency.
+**Статус: PostgreSQL інтеграційні тести виконано на локальній `go_test_db`.** Тест legacy-міграції `up/down/up` пройшов; тест N+1 порівняння пройшов із 21 SELECT до оптимізації та 4 SELECT після `Preload`. API smoke test окремо не запускався. Нижче наведено фактичні counts, latency та приклади SQL з успішного запуску `TestPostgresBookListNPlusOneComparison`.
 
 | Варіант | Фактичний SELECT count | Фактична latency (медіана, ms) | SQL log |
 |---|---:|---:|---|
-| До: наївне завантаження | Не виміряно | Не виміряно | Потрібен запуск наведеної команди з `TEST_DATABASE_URL` |
-| Після: GORM `Preload` | Не виміряно | Не виміряно | Потрібен запуск наведеної команди з `TEST_DATABASE_URL` |
+| До: наївне завантаження | 21 | 2.796 | Книги: 1; автори: 10; категорії: 10 |
+| Після: GORM `Preload` | 4 | 1.042 | Книги: 1; `book_authors`: 1; автори: 1; категорії: 1 |
 
-Після успішного запуску вставити сюди точні рядки `BEFORE` / `AFTER` із terminal output, зокрема повторювані запити до авторів/категорій та пакетні `SELECT ... WHERE ... IN (...)` після Preload, а також фактичні SELECT counts і median latency. Повторний запуск з реальною тестовою БД — обов’язкова умова завершення цього пункту здачі; наведений тест сам по собі не означає, що докази вже отримані.
+Фрагменти фактичного SQL з того самого запуску (наївні запити до авторів/категорій повторювалися по одному разу на кожну з 10 книг):
 
-Перевірки, виконані без бази: `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`. Інтеграційні тести PostgreSQL запускаються, коли встановлено `TEST_DATABASE_URL`; у локальному запуску без цієї змінної вони пропускаються. Див. [контрольні точки](checkpoints/README.md).
+```text
+BEFORE naive: SELECTs=21 first-run=2.764ms median=2.796ms
+SELECT * FROM "books" WHERE books.category_id = 41 ORDER BY books.id ASC LIMIT 100
+SELECT "authors"."id","authors"."full_name","authors"."bio","authors"."created_at","authors"."updated_at" FROM "authors" JOIN "book_authors" ON "book_authors"."author_id" = "authors"."id" AND "book_authors"."book_id" = 117
+SELECT * FROM "categories" WHERE "categories"."id" = 41 ORDER BY "categories"."id" LIMIT 1
+
+AFTER Preload: SELECTs=4 first-run=1.052ms median=1.042ms
+SELECT * FROM "book_authors" WHERE "book_authors"."book_id" IN (117,118,119,120,121,122,123,124,125,126)
+SELECT * FROM "authors" WHERE "authors"."id" IN (57,58,59,60,61)
+SELECT * FROM "categories" WHERE "categories"."id" = 41
+SELECT * FROM "books" WHERE books.category_id = 41 ORDER BY books.id ASC LIMIT 100
+```
+
+Час виміряно локально на тестовій PostgreSQL БД; це результат одного тестового запуску, а не узагальнена продуктивність.
+
+Додаткові перевірки, виконані раніше без PostgreSQL: `go test -race ./...`, `go vet ./...`, `go build ./...`. Після налаштування `TEST_DATABASE_URL` повторно пройшов повний набір `go test ./... -count=1`. Інтеграційні тести PostgreSQL пропускаються, якщо ця змінна не задана. Див. [контрольні точки](checkpoints/README.md).
 
 ## 7. Здача
 

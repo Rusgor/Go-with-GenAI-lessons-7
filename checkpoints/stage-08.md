@@ -12,11 +12,12 @@
 ## Рефакторинг та перевірки
 - Залишено окремий LibraTrack API, щоб не змінювати Lesson 7 `devices` контракт та його in-memory поведінку.
 - `GormBookRepository.Delete` має виконувати запит із переданим `context.Context`; додано інтеграційне покриття скасованого контексту.
-- Додано PostgreSQL інтеграційне порівняння наївного N+1 завантаження проти production `Preload`: 10 книг, 5 авторів, 3 категорії; логування SQL, перевірка пакетних запитів, 7 замірів медіани. Це відтворюваний тестовий стенд, а не вже отримані докази.
+- Додано PostgreSQL інтеграційне порівняння наївного N+1 завантаження проти production `Preload`: 10 книг, 5 авторів, 3 категорії; логування SQL, перевірка пакетних запитів, 7 замірів медіани. Також доданий ізольований тест `up/down/up` для legacy-міграції, який перевіряє порожню категорію та точне відновлення авторського/категорійного тексту.
 - Виправлено legacy migration: порожня категорія мапиться на `Uncategorized`; оригінальні `author` / `category` текстові значення зберігаються для точного відновлення при `down`. Legacy `author` залишається comma-separated форматом, тому кома в імені неоднозначна як роздільник.
-- Після змін пройшли `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `go mod tidy -go=1.21` і `git diff --check`.
-- `TestPostgresBookListNPlusOneComparison` явно пропущений, бо `TEST_DATABASE_URL` не заданий. API smoke test, SQL logs і latency на реальній БД не зафіксовані: локальний PostgreSQL недоступний, Docker/Podman/psql/migrate відсутні.
+- Після виправлення очікувань PostgreSQL SELECT count повний запуск `go test ./... -count=1` пройшов. `TestPostgresHomeworkNormalizationMigrationRoundTrip`, `TestPostgresBookListUsesConstantPreloadQueries` і `TestPostgresBookListNPlusOneComparison` пройшли на тестовій БД.
+- Фактичне порівняння на 10 книгах: naive — 21 SELECT, медіана 2.796 ms; GORM Preload — 4 SELECT, медіана 1.042 ms. Preload складається з запитів до `books`, `book_authors`, `authors` і `categories`; пакетні зв'язки `book_authors` та автори завантажуються через `IN`. API smoke test окремо не запускався.
+- Раніше також пройшли `go test -race ./...`, `go vet ./...`, `go build ./...`, `go mod tidy -go=1.21` і `git diff --check`; актуальний стан цих перевірок після останніх тестових змін не переперевірявся.
 - Структура зберігає `module homework` та старі імпорти; Theme 8 workflow з вимогою `module libratrack` залишається несумісним без окремого рішення щодо старого контракту.
 
 ## Статус
-Рефакторинг та відтворюваний тест порівняння додані, але перевірка міграцій на PostgreSQL і фактичні SQL/latency докази для README залишаються незавершеними. Не вважати всі вимоги здачі підтвердженими, доки тест не запущено на реальній БД.
+Рефакторинг, перевірка legacy-міграції та N+1 порівняння підтверджені PostgreSQL інтеграційними тестами; повний `go test ./... -count=1` пройшов, фактичні SELECT counts і latency зафіксовані в README. API smoke test залишається незапущеним.
