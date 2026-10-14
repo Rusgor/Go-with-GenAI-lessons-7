@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 	"homework/internal/model"
@@ -127,8 +130,8 @@ func TestPostgresBookListUsesConstantPreloadQueries(t *testing.T) {
 		return counter.count()
 	}
 	selectsWithOneExtraBook := countListSelects()
-	if selectsWithOneExtraBook != 3 {
-		t.Fatalf("list SELECT count with one extra book = %d, want 3 (books, authors, categories)", selectsWithOneExtraBook)
+	if selectsWithOneExtraBook != 4 {
+		t.Fatalf("list SELECT count with one extra book = %d, want 4 (books, book_authors, authors, categories)", selectsWithOneExtraBook)
 	}
 	var base model.Book
 	if err := db.Preload("Authors").First(&base).Error; err != nil {
@@ -145,6 +148,98 @@ func TestPostgresBookListUsesConstantPreloadQueries(t *testing.T) {
 	selectsWithSixExtraBooks := countListSelects()
 	if selectsWithSixExtraBooks != selectsWithOneExtraBook {
 		t.Fatalf("list SELECT count changed as books were added: one extra=%d, six extra=%d", selectsWithOneExtraBook, selectsWithSixExtraBooks)
+	}
+}
+
+func TestPostgresHomeworkNormalizationMigrationRoundTrip(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	baseDB, err := OpenDB(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	baseSQLDB, err := baseDB.DB()
+	if err != nil {
+		t.Fatalf("get base database pool: %v", err)
+	}
+
+	schema := fmt.Sprintf("libratrack_migration_%d", time.Now().UnixNano())
+	if err := baseDB.Exec(fmt.Sprintf(`CREATE SCHEMA "%s"`, schema)).Error; err != nil {
+		t.Fatalf("create isolated migration schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := baseDB.Exec(fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema)).Error; err != nil {
+			t.Errorf("drop isolated migration schema: %v", err)
+		}
+		_ = baseSQLDB.Close()
+	})
+
+	schemaURL, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse database URL: %v", err)
+	}
+	query := schemaURL.Query()
+	query.Set("options", "-c search_path="+schema)
+	schemaURL.RawQuery = query.Encode()
+	legacyURL := schemaURL.String()
+
+	migrationDir, err := filepath.Abs("../../migrations-homework/migrations")
+	if err != nil {
+		t.Fatalf("resolve homework migrations: %v", err)
+	}
+	sourceURL := (&url.URL{Scheme: "file", Opaque: filepath.ToSlash(migrationDir)}).String()
+	m, err := migrate.New(sourceURL, legacyURL)
+	if err != nil {
+		t.Fatalf("create homework migrator: %v", err)
+	}
+	defer func() { _, _ = m.Close() }()
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+
+	legacyDB, err := OpenDB(ctx, legacyURL)
+	if err != nil {
+		t.Fatalf("open isolated legacy schema: %v", err)
+	}
+	legacySQLDB, err := legacyDB.DB()
+	if err != nil {
+		t.Fatalf("get isolated database pool: %v", err)
+	}
+	t.Cleanup(func() { _ = legacySQLDB.Close() })
+	const originalAuthor = "Lovelace, Ada"
+	const originalCategory = "   "
+	var bookID uint64
+	if err := legacyDB.Raw(`INSERT INTO books (title, isbn, author, category) VALUES (?, ?, ?, ?) RETURNING id`, "Migration round-trip", "L8-MIGRATION-ROUNDTRIP", originalAuthor, originalCategory).Row().Scan(&bookID); err != nil {
+		t.Fatalf("insert legacy book: %v", err)
+	}
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("apply normalization migration: %v", err)
+	}
+
+	var category model.Category
+	if err := legacyDB.Where("name = ?", "Uncategorized").First(&category).Error; err != nil {
+		t.Fatalf("find fallback category: %v", err)
+	}
+	var authorCount int64
+	if err := legacyDB.Model(&model.Author{}).Where("full_name IN ?", []string{"Lovelace", "Ada"}).Count(&authorCount).Error; err != nil || authorCount != 2 {
+		t.Fatalf("normalized author count = %d, error %v; want 2", authorCount, err)
+	}
+
+	if err := m.Steps(-1); err != nil {
+		t.Fatalf("roll back normalization migration: %v", err)
+	}
+	var restoredAuthor, restoredCategory string
+	if err := legacyDB.Raw("SELECT author, category FROM books WHERE id = ?", bookID).Row().Scan(&restoredAuthor, &restoredCategory); err != nil {
+		t.Fatalf("read restored legacy values: %v", err)
+	}
+	if restoredAuthor != originalAuthor || restoredCategory != originalCategory {
+		t.Fatalf("restored author/category = %q/%q; want %q/%q", restoredAuthor, restoredCategory, originalAuthor, originalCategory)
+	}
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("reapply normalization migration: %v", err)
 	}
 }
 
@@ -192,21 +287,23 @@ func TestPostgresBookListNPlusOneComparison(t *testing.T) {
 	if len(naiveQueries) != 21 {
 		t.Fatalf("naive SELECT count = %d, want 21 for 10 books", len(naiveQueries))
 	}
-	if len(preloadedQueries) != 3 {
-		t.Fatalf("preloaded SELECT count = %d, want 3 (books, authors, categories)", len(preloadedQueries))
+	if countSelectsFromTable(naiveQueries, "books") != 1 ||
+		countSelectsFromTable(naiveQueries, "authors") != 10 ||
+		countSelectsFromTable(naiveQueries, "categories") != 10 {
+		t.Fatalf("naive SELECT breakdown = books:%d authors:%d categories:%d, want 1/10/10", countSelectsFromTable(naiveQueries, "books"), countSelectsFromTable(naiveQueries, "authors"), countSelectsFromTable(naiveQueries, "categories"))
 	}
-	var hasCategoryBatch, hasAuthorBatch bool
-	for _, query := range preloadedQueries {
-		sql := strings.ToLower(query.sql)
-		if strings.Contains(sql, "from \"categories\"") && strings.Contains(sql, " in ") {
-			hasCategoryBatch = true
-		}
-		if strings.Contains(sql, "book_authors") && strings.Contains(sql, " in ") {
-			hasAuthorBatch = true
+	if len(preloadedQueries) != 4 {
+		t.Fatalf("preloaded SELECT count = %d, want 4 (books, book_authors, authors, categories)", len(preloadedQueries))
+	}
+	for _, table := range []string{"books", "book_authors", "authors", "categories"} {
+		if countSelectsFromTable(preloadedQueries, table) != 1 {
+			t.Fatalf("preloaded SELECT count from %s = %d, want 1: %v", table, countSelectsFromTable(preloadedQueries, table), preloadedQueries)
 		}
 	}
-	if !hasCategoryBatch || !hasAuthorBatch {
-		t.Fatalf("preloaded SQL lacks batched relation SELECTs (categories=%t authors=%t): %v", hasCategoryBatch, hasAuthorBatch, preloadedQueries)
+	for _, table := range []string{"book_authors", "authors"} {
+		if !hasBatchedSelectFromTable(preloadedQueries, table) {
+			t.Fatalf("preloaded SQL lacks a batched SELECT from %s: %v", table, preloadedQueries)
+		}
 	}
 
 	naiveMedian := measureMedian(t, naive, 7)
@@ -363,6 +460,31 @@ func measureMedian(t *testing.T, run func() error, samples int) time.Duration {
 	}
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	return durations[len(durations)/2]
+}
+
+func countSelectsFromTable(queries []capturedQuery, table string) int {
+	count := 0
+	for _, query := range queries {
+		sql := normalizeCapturedSQL(query.sql)
+		if strings.HasPrefix(sql, "select ") && strings.Contains(sql, " from "+table) {
+			count++
+		}
+	}
+	return count
+}
+
+func hasBatchedSelectFromTable(queries []capturedQuery, table string) bool {
+	for _, query := range queries {
+		sql := normalizeCapturedSQL(query.sql)
+		if strings.HasPrefix(sql, "select ") && strings.Contains(sql, " from "+table) && strings.Contains(sql, " in ") {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCapturedSQL(query string) string {
+	return strings.ReplaceAll(strings.ToLower(query), `"`, "")
 }
 
 type selectCounter struct {
