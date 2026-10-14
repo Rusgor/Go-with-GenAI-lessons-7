@@ -1,0 +1,33 @@
+LibraTrack — security design
+
+Roles
+- reader: default registered user; may browse public catalog and view only their own loans.
+- librarian: may perform staff catalog and loan operations.
+- admin: all librarian access plus user listing and role assignment.
+
+Access matrix
+| Method | Endpoint | Access |
+|---|---|---|
+| POST | /api/v1/auth/register | Public |
+| POST | /api/v1/auth/login | Public |
+| GET | /api/v1/books | Public |
+| GET | /api/v1/books/:id | Public |
+| GET | /api/v1/categories, /api/v1/categories/:id | Public |
+| GET | /api/v1/authors, /api/v1/authors/:id | Public |
+| GET | /api/v1/books/:id/copies and /availability | Public |
+| GET | /api/v1/me/loans | Any authenticated user; scoped to JWT user_id |
+| POST | /api/v1/categories, /api/v1/authors, /api/v1/books | librarian or admin |
+| PUT, DELETE | /api/v1/books/:id | librarian or admin |
+| POST | /api/v1/books/:id/copies | librarian or admin |
+| POST | /api/v1/loans | librarian or admin |
+| POST | /api/v1/loans/:id/return | librarian or admin |
+| GET | /api/v1/users | admin |
+| PUT | /api/v1/users/:id/role | admin |
+
+DTO / data exposure rules
+- `RegisterRequest` and `LoginRequest` contain only email/password fields. Public registration always assigns reader; input role is never trusted.
+- `UpdateProfileRequest` is limited to the user-editable email field; no profile-update route is exposed in this endpoint matrix.
+- Book, loan, and role endpoints bind request-specific DTOs and not GORM models.
+- `User.PasswordHash` has `json:"-"`; user-list queries select only public columns.
+- Login returns the same HTTP 401 response for unknown email and wrong password.
+- JWT is HS256, expires after 24 hours, and uses only JWT_SECRET. Middleware verifies signature and expiry before trusting user_id/role.

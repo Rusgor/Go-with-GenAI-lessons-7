@@ -31,6 +31,9 @@ func main() {
 }
 
 func runLibraryAPI(databaseURL string) {
+	if len([]byte(os.Getenv("JWT_SECRET"))) < 32 {
+		log.Fatal("JWT_SECRET must be configured with at least 32 bytes")
+	}
 	migrationsPath := os.Getenv("MIGRATIONS_PATH")
 	if migrationsPath == "" {
 		migrationsPath = "migrations"

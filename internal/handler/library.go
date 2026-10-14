@@ -22,22 +22,31 @@ func NewLibraryHandler(books repository.BookRepository, authors *repository.Auth
 	return &LibraryHandler{books: books, authors: authors, categories: categories, copies: copies}
 }
 
-func (h *LibraryHandler) RegisterRoutes(router gin.IRouter) {
+func (h *LibraryHandler) RegisterPublicRoutes(router gin.IRouter) {
 	router.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
-	router.POST("/categories", h.createCategory)
 	router.GET("/categories", h.listCategories)
 	router.GET("/categories/:id", h.getCategory)
-	router.POST("/authors", h.createAuthor)
 	router.GET("/authors", h.listAuthors)
 	router.GET("/authors/:id", h.getAuthor)
-	router.POST("/books", h.createBook)
 	router.GET("/books", h.listBooks)
 	router.GET("/books/:id", h.getBook)
+	router.GET("/books/:id/copies", h.listCopies)
+	router.GET("/books/:id/availability", h.availability)
+}
+
+func (h *LibraryHandler) RegisterStaffRoutes(router gin.IRouter) {
+	router.POST("/categories", h.createCategory)
+	router.POST("/authors", h.createAuthor)
+	router.POST("/books", h.createBook)
 	router.PUT("/books/:id", h.updateBook)
 	router.DELETE("/books/:id", h.deleteBook)
 	router.POST("/books/:id/copies", h.createCopy)
-	router.GET("/books/:id/copies", h.listCopies)
-	router.GET("/books/:id/availability", h.availability)
+}
+
+// RegisterRoutes preserves the legacy ungrouped registration for handler tests.
+func (h *LibraryHandler) RegisterRoutes(router gin.IRouter) {
+	h.RegisterPublicRoutes(router)
+	h.RegisterStaffRoutes(router)
 }
 
 func bindJSON(c *gin.Context, target any) bool {

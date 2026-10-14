@@ -187,10 +187,12 @@ docker compose up -d
 $env:DATABASE_URL = "postgres://libratrack:libratrack@localhost:5432/libratrack?sslmode=disable"
 $env:MIGRATIONS_PATH = "migrations"
 $env:PORT = "8081"
+# Встановіть секрет із секрет-менеджера (мінімум 32 байти); не комітьте його.
+$env:JWT_SECRET = "<set-a-private-random-secret-of-at-least-32-bytes>"
 go run ./cmd/libratrack
 ```
 
-API: `http://localhost:8081/health`, `http://localhost:8081/api/v1/books`; Swagger endpoint: `http://localhost:8081/swagger/index.html`. Міграції застосовуються командою `golang-migrate` під час запуску. Перехідна нормалізаційна міграція, що відповідає імені з умови, розміщена окремо в `migrations-homework/migrations/` і має legacy `000001` перед нею; не запускайте цю послідовність поверх основної схеми.
+API: `http://localhost:8081/health`, `http://localhost:8081/api/v1/books`; Swagger endpoint: `http://localhost:8081/swagger/index.html`. Міграції застосовуються командою `golang-migrate` під час запуску. `JWT_SECRET` обов'язковий і має містити щонайменше 32 байти; значення зберігайте поза репозиторієм. Після першої реєстрації початкового адміністратора слід призначити контрольованим SQL-запитом з привілейованого каналу БД, оскільки публічний endpoint навмисно не дозволяє самопризначення admin. Перехідна нормалізаційна міграція, що відповідає імені з умови, розміщена окремо в `migrations-homework/migrations/` і має legacy `000001` перед нею; не запускайте цю послідовність поверх основної схеми.
 
 ### Промпт для генерації/перевірки міграції
 
@@ -238,6 +240,10 @@ SELECT * FROM "books" WHERE books.category_id = 41 ORDER BY books.id ASC LIMIT 1
 Час виміряно локально на тестовій PostgreSQL БД; це результат одного тестового запуску, а не узагальнена продуктивність.
 
 Додаткові перевірки, виконані раніше без PostgreSQL: `go test -race ./...`, `go vet ./...`, `go build ./...`. Після налаштування `TEST_DATABASE_URL` повторно пройшов повний набір `go test ./... -count=1`. Інтеграційні тести PostgreSQL пропускаються, якщо ця змінна не задана. Див. [контрольні точки](checkpoints/README.md).
+
+## Lesson 9 Security Report
+
+LibraTrack має bcrypt-аутентифікацію, JWT HS256 з 24-годинним строком дії та RBAC для публічних, захищених, staff і admin маршрутів. Матриця доступу, промпти та security triage: [security_design.txt](security_design.txt), [prompts.txt](prompts.txt), [security_audit.md](security_audit.md). Окремий звіт етапу з командами й фактичними результатами: [checkpoints/stage-09.md](checkpoints/stage-09.md).
 
 ## 7. Здача
 

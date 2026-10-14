@@ -1,0 +1,21 @@
+# Task 2.1 — bcrypt authentication, JWT issuance, migration
+
+Implement authentication in this Go 1.21/Gin/GORM/PostgreSQL project. Follow existing repository and handler conventions; do not bind request JSON directly to database models.
+
+1. Add forward/reverse PostgreSQL migrations `000003_add_auth_fields.up.sql` and `.down.sql`. Add `users.password_hash`; normalize legacy `member` accounts to `reader`; constrain roles to `reader`, `librarian`, and `admin`; set the default role to `reader`. Make the down migration restore the previous constraint/default and map `reader` back to `member` before dropping the hash column.
+2. Update `internal/model/user.go` with the credential field and the exact tag `json:"-"` on `PasswordHash`. Never return password hashes from API responses.
+3. Implement explicit RegisterRequest and LoginRequest DTOs containing only editable input fields (`email`, `password`). Registration must ignore/reject caller-supplied role fields and always assign `reader`. Hash passwords with `bcrypt.GenerateFromPassword(..., bcrypt.DefaultCost)`; disallow passwords longer than bcrypt's 72-byte input limit. Map duplicate email to HTTP 422.
+4. Login must use `bcrypt.CompareHashAndPassword`. For an unknown email and a wrong password, return the exact same HTTP 401 status and `invalid credentials` response. Do not reveal whether an account exists.
+5. On successful login issue a JWT signed with `jwt.SigningMethodHS256`. Claims must include `user_id`, `role`, and `exp` exactly 24 hours in the future. Load the signing secret only from `os.Getenv("JWT_SECRET")`; never add a hard-coded fallback. If the secret is missing, fail safely without issuing a token.
+6. Add table-driven `httptest` coverage for registration, duplicate email, successful login/JWT, generic bad credentials, and JSON responses that never contain `password_hash`.
+7. Keep the independent devices API unchanged. Run `gofmt`, `go test ./...`, `go vet ./...`, and `go build ./...`; report exact outcomes and any PostgreSQL integration tests that could not run.
+
+# Task 2.2 — JWT authentication and RBAC middleware
+
+Implement `internal/middleware/auth.go` and `internal/middleware/rbac.go` for the LibraTrack Gin API.
+
+1. `AuthMiddleware` must read `Authorization: Bearer <token>`, accept only HS256, verify the signature and registered expiration (`exp`), and reject absent, malformed, expired, wrong-algorithm, or invalid-signature tokens with HTTP 401 using `c.AbortWithStatusJSON`. On success, set `user_id` and `role` in Gin context.
+2. `RequireRole(allowed ...string)` must inspect the authenticated context role. If no valid authenticated role exists, abort with HTTP 401; if authenticated but not allowed, abort with HTTP 403. Use `c.AbortWithStatusJSON` in both failure cases.
+3. Register Gin route groups in `internal/app/library.go` in this order: public (register/login and public catalog reads), protected (AuthMiddleware), staff (Auth then RequireRole librarian/admin), and admin (Auth then RequireRole admin). Do not let a role in request JSON override the role in a verified token.
+4. Keep `GET /api/v1/books` public. Require staff for catalog writes, `POST /api/v1/loans`, and `POST /api/v1/loans/:id/return`; require any authenticated user for `GET /api/v1/me/loans` and return only that token's user's loans; require admin for `GET /api/v1/users` and `PUT /api/v1/users/:id/role`.
+5. Add integration-style `httptest` cases for missing/expired tokens (401), reader denied from book creation (403), librarian/admin book creation (201), and admin-only access. Ensure the chain stops after middleware abort.

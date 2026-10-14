@@ -6,6 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"homework/internal/handler"
+	"homework/internal/middleware"
+	"homework/internal/model"
 	"homework/internal/repository"
 )
 
@@ -19,13 +21,35 @@ func NewLibraryRouter(db *gorm.DB) http.Handler {
 	})
 
 	api := router.Group("/api/v1")
+	users := repository.NewUserRepository(db)
+	loans := repository.NewLoanRepository(db)
+	access := handler.NewAccessHandler(users, loans)
 	library := handler.NewLibraryHandler(
 		repository.NewGormBookRepository(db),
 		repository.NewAuthorRepository(db),
 		repository.NewCategoryRepository(db),
 		repository.NewCopyRepository(db),
 	)
-	library.RegisterRoutes(api)
+	public := api.Group("")
+	library.RegisterPublicRoutes(public)
+	auth := handler.NewAuthHandler(users)
+	public.POST("/auth/register", auth.Register)
+	public.POST("/auth/login", auth.Login)
+
+	protected := api.Group("")
+	protected.Use(middleware.AuthMiddleware())
+	protected.GET("/me/loans", access.MyLoans)
+
+	staff := protected.Group("")
+	staff.Use(middleware.RequireRole(model.UserLibrarian, model.UserAdmin))
+	library.RegisterStaffRoutes(staff)
+	staff.POST("/loans", access.CreateLoan)
+	staff.POST("/loans/:id/return", access.ReturnLoan)
+
+	admin := protected.Group("")
+	admin.Use(middleware.RequireRole(model.UserAdmin))
+	admin.GET("/users", access.ListUsers)
+	admin.PUT("/users/:id/role", access.UpdateUserRole)
 	return router
 }
 

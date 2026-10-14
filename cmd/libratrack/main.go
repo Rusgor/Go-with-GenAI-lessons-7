@@ -15,6 +15,9 @@ import (
 )
 
 func main() {
+	if len([]byte(os.Getenv("JWT_SECRET"))) < 32 {
+		log.Fatal("JWT_SECRET must be configured with at least 32 bytes")
+	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
