@@ -243,7 +243,7 @@ SELECT * FROM "books" WHERE books.category_id = 41 ORDER BY books.id ASC LIMIT 1
 
 ## Lesson 9 Security Report
 
-LibraTrack має bcrypt-аутентифікацію, JWT HS256 з 24-годинним строком дії та RBAC для публічних, захищених, staff і admin маршрутів. Матриця доступу, промпти та security triage: [security_design.txt](security_design.txt), [prompts.txt](prompts.txt), [security_audit.md](security_audit.md). Окремий звіт етапу з командами й фактичними результатами: [checkpoints/stage-09.md](checkpoints/stage-09.md).
+LibraTrack має bcrypt-аутентифікацію, JWT HS256 з 24-годинним строком дії та RBAC для публічних, захищених, staff і admin маршрутів; user/admin та loan endpoints винесені в окремі handler-и. Table-driven auth/RBAC тести розміщені в `internal/handler/auth_test.go` і `internal/handler/rbac_test.go`. Матриця доступу, промпти та security triage: [security_design.txt](security_design.txt), [prompts.txt](prompts.txt), [security_audit.md](security_audit.md). Окремий звіт етапу з командами й фактичними результатами: [checkpoints/stage-09.md](checkpoints/stage-09.md).
 
 ## 7. Здача
 

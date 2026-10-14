@@ -16,6 +16,26 @@ Implement `internal/middleware/auth.go` and `internal/middleware/rbac.go` for th
 
 1. `AuthMiddleware` must read `Authorization: Bearer <token>`, accept only HS256, verify the signature and registered expiration (`exp`), and reject absent, malformed, expired, wrong-algorithm, or invalid-signature tokens with HTTP 401 using `c.AbortWithStatusJSON`. On success, set `user_id` and `role` in Gin context.
 2. `RequireRole(allowed ...string)` must inspect the authenticated context role. If no valid authenticated role exists, abort with HTTP 401; if authenticated but not allowed, abort with HTTP 403. Use `c.AbortWithStatusJSON` in both failure cases.
-3. Register Gin route groups in `internal/app/library.go` in this order: public (register/login and public catalog reads), protected (AuthMiddleware), staff (Auth then RequireRole librarian/admin), and admin (Auth then RequireRole admin). Do not let a role in request JSON override the role in a verified token.
+3. Demonstrate nested Gin route registration in this repository's `internal/app/library.go` (called by `app.NewLibraryRouter` from `cmd/libratrack/main.go`):
+   ```go
+   public := api.Group("")
+   library.RegisterPublicRoutes(public)
+   public.POST("/auth/register", auth.Register)
+   public.POST("/auth/login", auth.Login)
+
+   protected := api.Group("")
+   protected.Use(middleware.AuthMiddleware())
+   protected.GET("/me/loans", loanHandler.MyLoans)
+
+   staff := protected.Group("")
+   staff.Use(middleware.RequireRole(model.UserLibrarian, model.UserAdmin))
+   library.RegisterStaffRoutes(staff)
+   staff.POST("/loans", loanHandler.CreateLoan)
+
+   admin := protected.Group("")
+   admin.Use(middleware.RequireRole(model.UserAdmin))
+   admin.GET("/users", userHandler.ListUsers)
+   ```
+   Keep route registration out of the unrelated root `main.go`; the app router is the LibraTrack equivalent of the assignment's `main.go` example. Auth must execute before RBAC; do not let a role in request JSON override the role in a verified token.
 4. Keep `GET /api/v1/books` public. Require staff for catalog writes, `POST /api/v1/loans`, and `POST /api/v1/loans/:id/return`; require any authenticated user for `GET /api/v1/me/loans` and return only that token's user's loans; require admin for `GET /api/v1/users` and `PUT /api/v1/users/:id/role`.
 5. Add integration-style `httptest` cases for missing/expired tokens (401), reader denied from book creation (403), librarian/admin book creation (201), and admin-only access. Ensure the chain stops after middleware abort.
