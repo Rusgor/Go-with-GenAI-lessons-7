@@ -12,6 +12,8 @@ import (
 
 	"homework/internal/app"
 	"homework/internal/repository"
+	"homework/migrations"
+	"homework/web"
 )
 
 func main() {
@@ -34,12 +36,21 @@ func runLibraryAPI(databaseURL string) {
 	if len([]byte(os.Getenv("JWT_SECRET"))) < 32 {
 		log.Fatal("JWT_SECRET must be configured with at least 32 bytes")
 	}
-	migrationsPath := os.Getenv("MIGRATIONS_PATH")
-	if migrationsPath == "" {
-		migrationsPath = "migrations"
-	}
-	if err := repository.ApplyMigrations(databaseURL, migrationsPath); err != nil {
+	// Migrations are embedded; MIGRATIONS_PATH only overrides them for development.
+	if migrationsPath := os.Getenv("MIGRATIONS_PATH"); migrationsPath != "" {
+		if err := repository.ApplyMigrations(databaseURL, migrationsPath); err != nil {
+			log.Fatalf("apply migrations: %v", err)
+		}
+	} else if err := repository.ApplyMigrationsFS(databaseURL, migrations.FS, "."); err != nil {
 		log.Fatalf("apply migrations: %v", err)
+	}
+	pages, err := web.Templates()
+	if err != nil {
+		log.Fatalf("load embedded templates: %v", err)
+	}
+	staticFiles, err := web.StaticFS()
+	if err != nil {
+		log.Fatalf("load embedded static assets: %v", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -58,7 +69,7 @@ func runLibraryAPI(databaseURL string) {
 	if port == "" {
 		port = "8080"
 	}
-	server := &http.Server{Addr: ":" + port, Handler: app.NewLibraryRouter(db), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: ":" + port, Handler: app.NewLibraryRouter(db, app.WithWeb(pages, staticFiles)), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
