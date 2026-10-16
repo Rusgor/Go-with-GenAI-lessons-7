@@ -30,6 +30,35 @@ func (r *CopyRepository) ListByBook(ctx context.Context, bookID uint64) ([]model
 	return copies, nil
 }
 
+// BookAvailability summarises copy counts for one book.
+type BookAvailability struct {
+	Total     int64
+	Available int64
+}
+
+// AvailabilityByBooks returns copy counts for many books in a single query.
+func (r *CopyRepository) AvailabilityByBooks(ctx context.Context, bookIDs []uint64) (map[uint64]BookAvailability, error) {
+	result := make(map[uint64]BookAvailability, len(bookIDs))
+	if len(bookIDs) == 0 {
+		return result, nil
+	}
+	var rows []struct {
+		BookID    uint64
+		Total     int64
+		Available int64
+	}
+	err := r.db.WithContext(ctx).Model(&model.Copy{}).
+		Select("book_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE status = ?) AS available", model.CopyAvailable).
+		Where("book_id IN ?", bookIDs).Group("book_id").Scan(&rows).Error
+	if err != nil {
+		return nil, translateDBError(err)
+	}
+	for _, row := range rows {
+		result[row.BookID] = BookAvailability{Total: row.Total, Available: row.Available}
+	}
+	return result, nil
+}
+
 func (r *CopyRepository) Availability(ctx context.Context, bookID uint64) (total, available int64, err error) {
 	var counts struct {
 		Total     int64

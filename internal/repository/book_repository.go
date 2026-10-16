@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -12,8 +13,10 @@ import (
 
 type BookFilter struct {
 	CategoryID uint64
-	Page       int
-	Limit      int
+	// Query is a case-insensitive substring matched against title, ISBN and author names.
+	Query string
+	Page  int
+	Limit int
 }
 
 type BookRepository interface {
@@ -114,6 +117,12 @@ func (r *GormBookRepository) List(ctx context.Context, filter BookFilter) ([]mod
 	if filter.CategoryID != 0 {
 		query = query.Where("books.category_id = ?", filter.CategoryID)
 	}
+	if q := strings.TrimSpace(filter.Query); q != "" {
+		like := "%" + likeEscaper.Replace(q) + "%"
+		query = query.Where(`books.title ILIKE ? OR books.isbn ILIKE ? OR EXISTS (
+			SELECT 1 FROM book_authors ba JOIN authors a ON a.id = ba.author_id
+			WHERE ba.book_id = books.id AND a.full_name ILIKE ?)`, like, like, like)
+	}
 	var books []model.Book
 	if err := query.Offset((page - 1) * limit).Limit(limit).Find(&books).Error; err != nil {
 		return nil, translateDBError(err)
@@ -148,6 +157,9 @@ func (r *GormBookRepository) loadAuthors(ctx context.Context, tx *gorm.DB, input
 	}
 	return authors, nil
 }
+
+// likeEscaper neutralises LIKE wildcards so user input is matched literally.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 func normalizePage(page, limit int) (int, int) {
 	if page < 1 {

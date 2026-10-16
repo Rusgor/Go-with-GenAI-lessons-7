@@ -50,14 +50,8 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		claims := &TokenClaims{}
-		token, err := jwt.ParseWithClaims(strings.TrimSpace(parts[1]), claims, func(token *jwt.Token) (any, error) {
-			if token.Method != jwt.SigningMethodHS256 {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return []byte(secret), nil
-		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
-		if err != nil || token == nil || !token.Valid || claims.UserID == 0 || !validRole(claims.Role) {
+		claims, ok := parseClaims(strings.TrimSpace(parts[1]), secret)
+		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "unauthorized", "message": "authentication required"}})
 			return
 		}
@@ -65,6 +59,21 @@ func AuthMiddleware() gin.HandlerFunc {
 		c.Set(ContextRole, claims.Role)
 		c.Next()
 	}
+}
+
+// parseClaims verifies an HS256 token (signature and exp) and the claim contents.
+func parseClaims(raw, secret string) (*TokenClaims, bool) {
+	claims := &TokenClaims{}
+	token, err := jwt.ParseWithClaims(raw, claims, func(token *jwt.Token) (any, error) {
+		if token.Method != jwt.SigningMethodHS256 {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(secret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	if err != nil || token == nil || !token.Valid || claims.UserID == 0 || !validRole(claims.Role) {
+		return nil, false
+	}
+	return claims, true
 }
 
 func validRole(role string) bool {
