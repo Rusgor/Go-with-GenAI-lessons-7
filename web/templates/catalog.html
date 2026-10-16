@@ -1,0 +1,24 @@
+{{define "content"}}
+<h1>Catalog</h1>
+
+<form class="search" action="/catalog" method="get" role="search">
+  <label for="q">Search books</label>
+  <input id="q" type="search" name="q" value="{{.Query}}" placeholder="Title, author or ISBN" autocomplete="off"
+         hx-get="/web/books"
+         hx-trigger="keyup changed delay:300ms"
+         hx-target="#book-list">
+  <noscript><button type="submit">Search</button></noscript>
+</form>
+
+<table class="books">
+  <thead>
+    <tr>
+      <th>Title</th><th>Authors</th><th>Category</th><th>ISBN</th><th>Availability</th>
+      {{if .CanDelete}}<th>Actions</th>{{end}}
+    </tr>
+  </thead>
+  <tbody id="book-list">
+    {{template "book_rows" .Books}}
+  </tbody>
+</table>
+{{end}}

@@ -39,3 +39,37 @@ Implement `internal/middleware/auth.go` and `internal/middleware/rbac.go` for th
    Keep route registration out of the unrelated root `main.go`; the app router is the LibraTrack equivalent of the assignment's `main.go` example. Auth must execute before RBAC; do not let a role in request JSON override the role in a verified token.
 4. Keep `GET /api/v1/books` public. Require staff for catalog writes, `POST /api/v1/loans`, and `POST /api/v1/loans/:id/return`; require any authenticated user for `GET /api/v1/me/loans` and return only that token's user's loans; require admin for `GET /api/v1/users` and `PUT /api/v1/users/:id/role`.
 5. Add integration-style `httptest` cases for missing/expired tokens (401), reader denied from book creation (403), librarian/admin book creation (201), and admin-only access. Ensure the chain stops after middleware abort.
+
+# Task 2.1 (Lesson 10) — layout, catalog page and book_row partial
+
+Act as a senior Go full-stack engineer. In this Go 1.21 / Gin / GORM project (module `homework`) create server-rendered HTML using ONLY the standard `html/template` package (never `text/template`, never `template.HTML`/`template.JS`/`template.URL` for user or database data).
+
+Files to create:
+1. `web/templates/layout.html` — full HTML5 document (`<!doctype html>`, `lang="en"`, viewport meta), `<title>{{.Title}} · LibraTrack</title>`, stylesheet `/static/css/style.css`, deferred script `/static/js/htmx.min.js`, a header with the brand link, and either "Signed in as {{.Role}}" + a POST `/logout` form or a "Log in" link. The page body must expose an extension point: `<main>{{block "content" .}}{{end}}</main>`.
+2. `web/templates/catalog.html` — defines `{{define "content"}}`: an `<h1>`, a search form (`<input type="search" name="q" value="{{.Query}}">`, works without JS via a normal GET to `/catalog?q=`), and a `<table class="books">` with columns Title, Authors, Category, ISBN, Availability and (only when `.CanDelete`) Actions. The `<tbody id="book-list">` renders `{{template "book_rows" .Books}}`.
+3. `web/templates/partials/book_row.html` — defines `book_row` (one `<tr>` per book: title, authors, category, ISBN and an availability indicator: a green badge "Available (x/y)" when `.Available` > 0, otherwise a red badge "Unavailable" — always text, never colour alone) and `book_rows` (ranges over books, and falls back to a single "No books found." row via `{{else}}`).
+Constraints: every dynamic value is printed with plain `{{.Field}}` so contextual autoescaping applies; no inline `<script>`, `<style>`, `style=` or `on*=` attributes (a strict CSP `default-src 'self'` will be applied); semantic, accessible markup (`<label for>`, `role="search"`).
+Output: only the three template files plus a short `web/static/css/style.css` (responsive, no external fonts/CDNs).
+
+# Task 2.2 (Lesson 10) — HTMX live search and row deletion
+
+Extend the templates from Task 2.1 and add handlers in `internal/handler/web/` (package `web`, Gin). Do not touch the JSON API under `/api/v1`.
+
+HTMX attributes:
+1. Live search — on the search `<input>`: `hx-get="/web/books"`, `hx-trigger="keyup changed delay:300ms"`, `hx-target="#book-list"` (default innerHTML swap). The input's own `name="q"` is sent automatically.
+2. Delete row (librarian/admin only) — a button in `book_row.html`: `hx-delete="/web/books/{{.ID}}"`, `hx-target="closest tr"`, `hx-swap="outerHTML"`, `hx-confirm="Delete this book?"`. Render the button only when the viewer is staff.
+
+Handlers:
+- `GET /web/books?q=` — when header `HX-Request: true` is present, return ONLY the rendered `book_rows` fragment (no layout, no `<html>`), HTTP 200. Without the header, 303-redirect to `/catalog?q=`.
+- `DELETE /web/books/:id` — authorised only for roles `librarian` and `admin` AND only when `HX-Request: true`; anonymous users and readers get `403 Forbidden`. On success respond with an EMPTY body and status `200 OK` (not 204, so htmx swaps the target out of the DOM). Unknown id → 404, malformed id → 400, FK conflict (loan history) → 409.
+- JWT comes from the HttpOnly cookie `libratrack_token` (add `OptionalCookieAuth` middleware reusing the existing HS256 claim validation); `POST /login` (form) sets the cookie with `HttpOnly; SameSite=Lax; Path=/; Secure` when TLS/COOKIE_SECURE, `POST /logout` clears it. Never return the token in a body.
+- Search must be parameterised (`ILIKE ?`) over title, ISBN and author name, with `%`/`_` escaped. Load availability for all listed books in one grouped query (no N+1).
+- Define small interfaces (BookStore, AvailabilityStore, UserStore) so handlers are testable with fakes.
+
+# Task 3.1 (Lesson 10) — go:embed for templates, static assets and migrations
+
+Instruct the agent: In `web/templates.go` use `//go:embed templates` with `embed.FS` and `template.ParseFS` (not disk-based `ParseGlob`); build one template set per page (layout + partials + page) so the `content` blocks do not collide. In `web/static.go` use `//go:embed static` and `fs.Sub(staticFS, "static")` so `/static/css/style.css` maps to `css/style.css`. Also embed `migrations/*.sql` (`migrations/embed.go`) and apply them with golang-migrate's `iofs` source, keeping `MIGRATIONS_PATH` as an optional dev override. Wire everything in `cmd/api/main.go` through `app.NewLibraryRouter(db, app.WithWeb(pages, staticFS))` and serve static files with `router.StaticFS("/static", http.FS(sub))`. The result must run from an empty directory containing only the binary (`CGO_ENABLED=0 go build -o libratrack ./cmd/api`).
+
+# Task 3.2 (Lesson 10) — table-driven HTML/HTMX handler tests
+
+Write `internal/handler/web/catalog_test.go` using `net/http/httptest`, real embedded templates (`homework/web`) and in-memory fakes for the stores. Table-driven cases: (1) `GET /catalog` → 200 with layout markup (`<!doctype html>`, `LibraTrack`), `id="book-list"` and the book table; (2) `GET /web/books?q=Go` with `HX-Request: true` → 200 with only `<tr>` fragments (no `<html`/`<table`, filtered results); (3) `DELETE /web/books/:id` by anonymous, invalid-token, reader, and librarian-without-`HX-Request` → 403 and nothing deleted; librarian/admin → empty 200 and the book is deleted; unknown id → 404; malformed id → 400. Add regression cases for autoescaping (`<script>` in a title is rendered escaped), the CSP/nosniff headers, and login setting an HttpOnly, SameSite=Lax cookie without leaking the JWT into the body.

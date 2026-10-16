@@ -1,0 +1,14 @@
+{{define "book_row"}}<tr id="book-{{.ID}}">
+  <td>{{.Title}}</td>
+  <td>{{.Authors}}</td>
+  <td>{{.Category}}</td>
+  <td>{{.ISBN}}</td>
+  <td>{{if gt .Available 0}}<span class="badge badge-ok">Available ({{.Available}}/{{.Total}})</span>{{else}}<span class="badge badge-none">Unavailable</span>{{end}}</td>
+  {{if .CanDelete}}<td><button type="button" class="danger"
+      hx-delete="/web/books/{{.ID}}"
+      hx-target="closest tr"
+      hx-swap="outerHTML"
+      hx-confirm="Delete this book?">Delete</button></td>{{end}}
+</tr>{{end}}
+
+{{define "book_rows"}}{{range .}}{{template "book_row" .}}{{else}}<tr class="empty"><td colspan="6">No books found.</td></tr>{{end}}{{end}}

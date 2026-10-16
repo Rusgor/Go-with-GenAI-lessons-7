@@ -1,18 +1,38 @@
 package app
 
 import (
+	"html/template"
+	"io/fs"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"homework/internal/handler"
+	webhandler "homework/internal/handler/web"
 	"homework/internal/middleware"
 	"homework/internal/model"
 	"homework/internal/repository"
 )
 
+// Option customises NewLibraryRouter.
+type Option func(*routerOptions)
+
+type routerOptions struct {
+	pages  map[string]*template.Template
+	static fs.FS
+}
+
+// WithWeb mounts the server-rendered UI (templates) and its static assets.
+func WithWeb(pages map[string]*template.Template, static fs.FS) Option {
+	return func(o *routerOptions) { o.pages, o.static = pages, static }
+}
+
 // NewLibraryRouter builds the LibraTrack API without changing the devices router.
-func NewLibraryRouter(db *gorm.DB) http.Handler {
+func NewLibraryRouter(db *gorm.DB, opts ...Option) http.Handler {
+	var options routerOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery(), libraryCORS())
 	router.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
@@ -51,6 +71,19 @@ func NewLibraryRouter(db *gorm.DB) http.Handler {
 	admin.Use(middleware.RequireRole(model.UserAdmin))
 	admin.GET("/users", userHandler.ListUsers)
 	admin.PUT("/users/:id/role", userHandler.UpdateUserRole)
+
+	if options.pages != nil {
+		webHandler := webhandler.New(
+			repository.NewGormBookRepository(db),
+			repository.NewCopyRepository(db),
+			users,
+			options.pages,
+		)
+		webHandler.Register(router)
+	}
+	if options.static != nil {
+		router.StaticFS("/static", http.FS(options.static))
+	}
 	return router
 }
 
