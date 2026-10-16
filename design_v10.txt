@@ -1,0 +1,110 @@
+LibraTrack — design_v10: веб-шар, HttpOnly cookies та аудит автоекранування
+=========================================================================
+
+1. АРХІТЕКТУРНИЙ ПЕРЕХІД: JWT У HttpOnly COOKIE
+-----------------------------------------------
+
+Було (урок 9): REST API видає JWT у JSON-відповіді POST /api/v1/auth/login; клієнт
+сам зберігає токен і надсилає його заголовком "Authorization: Bearer <jwt>".
+Для чистого API це нормально, але для браузерного UI це означало б, що токен треба
+десь тримати у JavaScript — найчастіше в localStorage.
+
+Стало (урок 10): для серверно-рендерених сторінок додано окремий веб-шар:
+
+  - POST /login (HTML-форма) перевіряє пароль через bcrypt, видає той самий
+    HS256 JWT (user_id, role, exp = 24 год) і кладе його в cookie "libratrack_token"
+    з атрибутами:
+        HttpOnly   — JavaScript не має доступу (document.cookie його не бачить);
+        SameSite=Lax — cookie не надсилається у крос-сайтових POST/DELETE;
+        Secure     — вмикається, коли запит іде по TLS або COOKIE_SECURE=true;
+        Path=/, Max-Age=86400 (відповідає exp токена).
+    Токен ніколи не потрапляє в тіло відповіді чи в HTML.
+  - Middleware OptionalCookieAuth (internal/middleware/cookie_auth.go) читає cookie,
+    перевіряє підпис та exp тією самою функцією parseClaims, що й Bearer-middleware,
+    і кладе user_id/role в контекст Gin. Невалідний cookie = анонімний запит.
+  - JSON API (/api/v1/...) НЕ змінено: воно як і раніше приймає тільки заголовок
+    Authorization. Cookie не дає доступу до API, тож браузерна сесія й
+    програмні клієнти розділені.
+  - POST /logout очищає cookie (Max-Age=-1).
+
+Чому localStorage небезпечний для серверних застосунків (XSS):
+  1. localStorage доступний будь-якому JavaScript на origin. Один успішний XSS
+     (невиправлений шаблон, вразлива стороння бібліотека, скомпрометований CDN-скрипт)
+     дає зловмиснику  localStorage.getItem("token")  і надсилання токена на
+     свій сервер. Токен діє 24 год і може використовуватись з будь-якої машини —
+     це повне перехоплення сесії, а не лише одноразова дія в контексті сторінки.
+  2. HttpOnly cookie недоступний скриптам взагалі. XSS усе ще може здійснювати запити
+     від імені користувача, поки сторінка відкрита, але не може викрасти токен
+     і використати його пізніше/деінде. Це різко звужує наслідки.
+  3. У серверно-рендереному застосунку JS для зберігання токена взагалі не потрібен:
+     браузер сам додає cookie до кожного запиту, а HTMX надсилає запити з того ж origin.
+     Тобто localStorage дав би поверхню атаки без жодної вигоди.
+  4. localStorage не має механізмів на кшталт Secure/SameSite/Expires, які браузер
+     застосовує автоматично.
+
+Ціна переходу — CSRF (cookie надсилається автоматично). Заходи захисту:
+  - SameSite=Lax: браузер не додає cookie до міжсайтових POST/DELETE.
+  - Небезпечні HTMX-ендпоінти (DELETE /web/books/:id) вимагають заголовок
+    "HX-Request: true". Форма на чужому сайті не може його виставити, а крос-origin
+    fetch із цим заголовком потребує CORS-preflight, який відхиляється
+    (Access-Control-Allow-Headers не містить HX-Request, credentials не дозволені).
+  - Content-Security-Policy: default-src 'self'; frame-ancestors 'none';
+    form-action 'self'; base-uri 'none' — жодних inline-скриптів і сторонніх origin
+    (htmx віддається з /static, allowEval вимкнено через <meta name="htmx-config">).
+  Залишковий ризик: login-CSRF (примусовий вхід в чужий акаунт) — низький для цього
+  застосунку; повноцінні CSRF-токени винесені за межі ДЗ.
+
+RBAC на веб-ендпоінтах: DELETE /web/books/:id дозволений лише librarian/admin.
+Анонімний користувач і reader отримують 403 Forbidden (за умовою ДЗ), кнопка
+"Delete" для них взагалі не рендериться, але серверна перевірка — єдине джерело істини.
+
+2. РІШЕННЯ ПО go:embed
+---------------------
+  - web/templates.go  — //go:embed templates, template.ParseFS (без ParseGlob);
+    для кожної сторінки окремий набір (layout + partials + сторінка), щоб блоки
+    "content" не конфліктували.
+  - web/static.go     — //go:embed static, fs.Sub(staticFS, "static") прибирає
+    префікс, тож /static/css/style.css відповідає файлу css/style.css.
+  - migrations/embed.go — SQL-міграції теж вбудовані (golang-migrate iofs), інакше
+    бінарник у чистій папці падав би на відсутній ./migrations. MIGRATIONS_PATH
+    залишився як необов'язкове перевизначення для розробки.
+
+3. АУДИТ АВТОЕКРАНУВАННЯ (ручний, виконано 2026-10-16)
+------------------------------------------------------
+Перевірені файли: web/templates/layout.html, catalog.html, login.html,
+partials/book_row.html, web/templates.go, internal/handler/web/catalog.go,
+internal/app/library.go, cmd/api/main.go.
+
+  [1] html/template vs text/template
+      Команда: пошук  "(html|text)/template"  по всіх *.go
+      Результат: 3 збіги — web/templates.go, internal/app/library.go,
+      internal/handler/web/catalog.go — усі "html/template". text/template
+      у проєкті відсутній. ВІДПОВІДАЄ.
+
+  [2] template.HTML та інші "довірені" типи
+      Команда: пошук  template.HTML | template.JS | template.URL | template.CSS |
+      template.HTMLAttr | template.JSStr | template.Srcset  у web/, internal/, cmd/
+      Результат: 0 збігів у виробничому коді. Шаблони не використовують pipeline "safe".
+      ВІДПОВІДАЄ.
+
+  [3] Контексти виводу недовірених даних
+      Недовірені значення (title, authors, category, isbn, q із query string,
+      повідомлення про помилку) виводяться тільки через {{.Field}}:
+        - текст у <td>/<span>      -> HTML-екранування;
+        - value="{{.Query}}"       -> екранування атрибута;
+        - hx-delete="/web/books/{{.ID}}" -> ID — uint64, не рядок від користувача.
+      Дані в JavaScript/CSS/URL-контексти не підставляються. Inline <script>,
+      <style>, style=, onclick= у шаблонах відсутні (CSP це й забороняє).
+      ВІДПОВІДАЄ.
+
+  [4] Регресійний тест: TestCatalogPageAndFragments/"titles are contextually
+      autoescaped" — книга з назвою <script>alert(1)</script> рендериться як
+      &lt;script&gt;alert(1)&lt;/script&gt; і не містить сирого тегу. ПРОЙДЕНО.
+
+  [5] Побічне: у fragment-ендпоінті q ніколи не вставляється в HTML напряму; для
+      редіректу використовується url.QueryEscape, а пошук у БД — параметризований
+      (ILIKE ?) з екрануванням % та _ . ВІДПОВІДАЄ.
+
+  Висновок: порушень автоекранування не знайдено. Правило для майбутніх змін:
+  не вводити template.HTML/JS/URL для даних із БД чи користувача; нові сторінки
+  додавати лише через web/templates.go (html/template).

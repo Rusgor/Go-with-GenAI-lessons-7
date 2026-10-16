@@ -10,3 +10,7 @@ list.txt
 result.json
 .idea/
 .vscode/
+
+# built binary
+/libratrack
+/libratrack.exe
