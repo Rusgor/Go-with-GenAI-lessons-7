@@ -129,7 +129,7 @@ func TestCatalogPageAndFragments(t *testing.T) {
 	}{
 		{
 			name: "full catalog page has layout and book table", target: "/catalog", status: 200,
-			contains: []string{"<!doctype html>", "LibraTrack", `id="book-list"`, `hx-get="/web/books"`,
+			contains: []string{"<!doctype html>", "LibraTrack", `/static/js/app.js`, `id="flash"`, `id="book-list"`, `hx-get="/web/books"`,
 				`hx-trigger="keyup changed delay:300ms"`, `hx-target="#book-list"`, "Go in Practice", "Available (2/3)", "Unavailable"},
 			excludes: []string{"hx-delete"},
 		},

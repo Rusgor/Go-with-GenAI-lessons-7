@@ -7,6 +7,7 @@
   <title>{{.Title}} · LibraTrack</title>
   <link rel="stylesheet" href="/static/css/style.css">
   <script src="/static/js/htmx.min.js" defer></script>
+  <script src="/static/js/app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -20,6 +21,7 @@
       {{end}}
     </nav>
   </header>
+  <div id="flash" class="flash" role="alert" hidden></div>
   <main>
     {{block "content" .}}{{end}}
   </main>

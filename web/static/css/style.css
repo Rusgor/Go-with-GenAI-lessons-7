@@ -24,3 +24,5 @@ button.danger { color:#fff; background:#b3261e; border:0; border-radius:6px; pad
 .empty td { color:var(--muted); text-align:center; }
 .htmx-request { opacity:.6; transition:opacity .2s; }
 @media (max-width:640px) { table.books th:nth-child(4), table.books td:nth-child(4) { display:none; } }
+.flash { margin:1rem 1.25rem 0; padding:.6rem .9rem; border:1px solid var(--no); border-radius:6px; background:var(--no-bg); color:var(--no); }
+.flash[hidden] { display:none; }
