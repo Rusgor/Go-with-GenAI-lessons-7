@@ -514,3 +514,67 @@ func (c *selectCounter) count() int {
 	defer c.mu.Unlock()
 	return c.selects
 }
+
+func TestPostgresBookSearchAndBatchAvailability(t *testing.T) {
+	db, suffix := postgresFixture(t)
+	book := createTestBook(t, db, suffix)
+	other := createTestBook(t, db, "other-"+suffix)
+	ctx := context.Background()
+	repo := NewGormBookRepository(db)
+
+	// Copies: book has 2 (1 available), other has none.
+	copyRepo := NewCopyRepository(db)
+	tag := strings.ReplaceAll(suffix, ".", "")
+	for i, status := range []string{model.CopyAvailable, model.CopyCheckedOut} {
+		c := model.Copy{BookID: book.ID, InventoryNo: fmt.Sprintf("SR-%s-%d", tag, i), Status: status}
+		if err := copyRepo.Create(ctx, &c); err != nil {
+			t.Fatalf("create copy: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name    string
+		query   string
+		wantIDs []uint64
+		wantNot []uint64
+	}{
+		{"by title, case-insensitive", "INTEGRATION BOOK " + suffix, []uint64{book.ID}, []uint64{other.ID}},
+		{"by ISBN", book.ISBN, []uint64{book.ID}, []uint64{other.ID}},
+		{"by author name", "integration author " + suffix, []uint64{book.ID}, []uint64{other.ID}},
+		{"LIKE wildcards are literal", "%", nil, []uint64{book.ID, other.ID}},
+		{"SQL metacharacters are inert", "'; DROP TABLE books;--", nil, []uint64{book.ID}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := repo.List(ctx, BookFilter{Query: tt.query, Limit: 100})
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			seen := map[uint64]bool{}
+			for _, b := range got {
+				seen[b.ID] = true
+			}
+			for _, id := range tt.wantIDs {
+				if !seen[id] {
+					t.Errorf("book %d missing from results", id)
+				}
+			}
+			for _, id := range tt.wantNot {
+				if seen[id] {
+					t.Errorf("book %d unexpectedly present", id)
+				}
+			}
+		})
+	}
+
+	counts, err := copyRepo.AvailabilityByBooks(ctx, []uint64{book.ID, other.ID})
+	if err != nil {
+		t.Fatalf("AvailabilityByBooks: %v", err)
+	}
+	if got := counts[book.ID]; got.Total != 2 || got.Available != 1 {
+		t.Errorf("book availability = %+v, want total 2 available 1", got)
+	}
+	if got := counts[other.ID]; got.Total != 0 || got.Available != 0 {
+		t.Errorf("book without copies = %+v, want zeros", got)
+	}
+}
